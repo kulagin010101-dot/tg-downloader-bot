@@ -1,5 +1,6 @@
 import os
 import uuid
+import asyncio
 import subprocess
 
 from fastapi import FastAPI, Request, HTTPException
@@ -27,6 +28,9 @@ REQUIRED_CHANNEL = "@otkritki_today"
 FILES_DIR = "files"
 os.makedirs(FILES_DIR, exist_ok=True)
 
+# Время жизни файлов (10 минут)
+FILE_TTL_SECONDS = 10 * 60
+
 # =========================
 # BOT + WEB
 # =========================
@@ -40,7 +44,7 @@ app = FastAPI()
 async def is_subscribed(user_id: int) -> bool:
     """
     Проверяет, подписан ли пользователь на REQUIRED_CHANNEL.
-    Бот должен быть администратором канала.
+    ВАЖНО: бот должен быть администратором канала.
     """
     try:
         member = await bot.get_chat_member(REQUIRED_CHANNEL, user_id)
@@ -58,6 +62,17 @@ def subscribe_keyboard() -> InlineKeyboardMarkup:
             )
         ]]
     )
+
+# =========================
+# АВТОУДАЛЕНИЕ ФАЙЛОВ
+# =========================
+async def delete_file_later(path: str, delay_seconds: int = FILE_TTL_SECONDS):
+    await asyncio.sleep(delay_seconds)
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+    except Exception:
+        pass
 
 # =========================
 # TELEGRAM WEBHOOK
@@ -121,15 +136,18 @@ async def handle(m: Message):
         except Exception:
             pass
 
-        await m.answer("❌ Не удалось скачать видео.")
+        await m.answer("❌ Не удалось скачать видео. Возможно, источник ограничивает доступ.")
         return
 
     # 4) Отдаём ссылку
     link = f"{PUBLIC_BASE_URL}/download/{file_id}"
     await m.answer(
         f"✅ Готово!\n\n"
-        f"📥 Ссылка на скачивание:\n{link}"
+        f"📥 Ссылка на скачивание (действует ~10 минут):\n{link}"
     )
+
+    # 5) Планируем автоудаление
+    asyncio.create_task(delete_file_later(filepath, FILE_TTL_SECONDS))
 
 # =========================
 # STARTUP: WEBHOOK
@@ -139,7 +157,7 @@ async def on_startup():
     await bot.set_webhook(f"{PUBLIC_BASE_URL}/tg/{WEBHOOK_SECRET}")
 
 # =========================
-# ЗАПУСК (Railway использует этот блок)
+# ЗАПУСК
 # =========================
 if __name__ == "__main__":
     import uvicorn
