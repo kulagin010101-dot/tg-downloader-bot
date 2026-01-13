@@ -31,6 +31,9 @@ os.makedirs(FILES_DIR, exist_ok=True)
 # Время жизни файлов (10 минут)
 FILE_TTL_SECONDS = 10 * 60
 
+# 🔒 Защита от дублей/спама: 1 пользователь = 1 активная загрузка
+ACTIVE_DOWNLOADS: set[int] = set()
+
 # =========================
 # BOT + WEB
 # =========================
@@ -101,6 +104,11 @@ def download(file_id: str):
 async def handle(m: Message):
     user_id = m.from_user.id
 
+    # 🔒 защита от дублей: если уже качаем — не начинаем новую загрузку
+    if user_id in ACTIVE_DOWNLOADS:
+        await m.answer("⏳ Подожди, я ещё обрабатываю предыдущий запрос.")
+        return
+
     # 1) Проверка подписки
     if not await is_subscribed(user_id):
         await m.answer(
@@ -116,26 +124,31 @@ async def handle(m: Message):
         return
 
     await m.answer("⏳ Скачиваю видео, подожди…")
+    ACTIVE_DOWNLOADS.add(user_id)
 
     # 3) Скачиваем видео
     file_id = f"{uuid.uuid4().hex}.mp4"
     filepath = os.path.join(FILES_DIR, file_id)
 
     try:
+        # Стараемся получить один итоговый mp4 (без плейлистов)
         subprocess.check_call([
             "yt-dlp",
-            "-f", "mp4",
-            "-o", filepath,
+            "-f", "best[ext=mp4]/best",
+            "--merge-output-format", "mp4",
             "--no-playlist",
+            "-o", filepath,
             url
         ])
     except Exception:
+        # чистим возможный битый файл
         try:
             if os.path.exists(filepath):
                 os.remove(filepath)
         except Exception:
             pass
 
+        ACTIVE_DOWNLOADS.discard(user_id)
         await m.answer("❌ Не удалось скачать видео. Возможно, источник ограничивает доступ.")
         return
 
@@ -146,8 +159,9 @@ async def handle(m: Message):
         f"📥 Ссылка на скачивание (действует ~10 минут):\n{link}"
     )
 
-    # 5) Планируем автоудаление
+    # 5) Планируем автоудаление и снимаем блокировку
     asyncio.create_task(delete_file_later(filepath, FILE_TTL_SECONDS))
+    ACTIVE_DOWNLOADS.discard(user_id)
 
 # =========================
 # STARTUP: WEBHOOK
